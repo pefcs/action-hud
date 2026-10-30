@@ -40,7 +40,7 @@ jobs:
           import fs from "node:fs";
           const manifest = JSON.parse(fs.readFileSync("module.json", "utf8"));
           if (manifest.id !== "action-hud") throw new Error("Unexpected module id");
-          if (!/^\\d+\\.\\d+\\.\\d+$/.test(manifest.version)) throw new Error("Invalid semantic version");
+          if (!/^\d+\.\d+\.\d+$/.test(manifest.version)) throw new Error("Invalid semantic version");
           for (const file of [...(manifest.esmodules ?? []), ...(manifest.styles ?? []), ...(manifest.languages ?? []).map(x => x.path), manifest.readme].filter(Boolean)) {
             if (!fs.existsSync(file)) throw new Error(`Manifest file is missing: ${file}`);
           }
