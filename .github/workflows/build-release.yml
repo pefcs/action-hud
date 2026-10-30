@@ -1,0 +1,134 @@
+name: Validate, build, and release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "module.json"
+      - "src/**"
+      - "styles/**"
+      - "lang/**"
+      - "README.md"
+      - "CHANGELOG.md"
+      - ".github/workflows/build-release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Validate and package Action HUD
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Validate manifest and JavaScript
+        run: |
+          node --check src/main.js
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          const manifest = JSON.parse(fs.readFileSync("module.json", "utf8"));
+          if (manifest.id !== "action-hud") throw new Error("Unexpected module id");
+          if (!/^\\d+\\.\\d+\\.\\d+$/.test(manifest.version)) throw new Error("Invalid semantic version");
+          for (const file of [...(manifest.esmodules ?? []), ...(manifest.styles ?? []), ...(manifest.languages ?? []).map(x => x.path), manifest.readme].filter(Boolean)) {
+            if (!fs.existsSync(file)) throw new Error(`Manifest file is missing: ${file}`);
+          }
+          console.log(`Validated Action HUD v${manifest.version}`);
+          NODE
+
+      - name: Determine whether the manifest version changed
+        id: release
+        shell: bash
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+
+          version="$(node --input-type=module -e 'import fs from "node:fs"; console.log(JSON.parse(fs.readFileSync("module.json", "utf8")).version)')"
+          previous_version=""
+          zero_sha="0000000000000000000000000000000000000000"
+
+          if [[ "$EVENT_NAME" == "push" && -n "${BEFORE_SHA:-}" && "$BEFORE_SHA" != "$zero_sha" ]]; then
+            if git cat-file -e "${BEFORE_SHA}:module.json" 2>/dev/null; then
+              previous_version="$(git show "${BEFORE_SHA}:module.json" | node --input-type=module -e 'let input = ""; for await (const chunk of process.stdin) input += chunk; console.log(JSON.parse(input).version)')"
+            fi
+          fi
+
+          tag="v${version}"
+          tag_exists=false
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            tag_exists=true
+          fi
+
+          create_release=false
+          if [[ "$EVENT_NAME" == "push" && ( "$version" != "$previous_version" || "$tag_exists" == "false" ) ]]; then
+            create_release=true
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "create_release=$create_release" >> "$GITHUB_OUTPUT"
+          echo "Current version: $version"
+          echo "Previous version: ${previous_version:-<none>}"
+          echo "Release tag exists: $tag_exists"
+          echo "Create release: $create_release"
+
+      - name: Build Foundry module ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf dist
+          mkdir -p dist/action-hud/src dist/action-hud/styles dist/action-hud/lang
+
+          cp module.json README.md CHANGELOG.md dist/action-hud/
+          cp -a src/. dist/action-hud/src/
+          cp -a styles/. dist/action-hud/styles/
+          cp -a lang/. dist/action-hud/lang/
+
+          cd dist
+          zip -qr module.zip action-hud
+          cp ../module.json module.json
+          unzip -l module.zip
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: action-hud-${{ steps.release.outputs.version }}-build-${{ github.run_number }}
+          path: dist/module.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Confirm release tag is unused
+        if: steps.release.outputs.create_release == 'true'
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="v${VERSION}"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "Tag ${tag} already exists. Published versions must not be reused; increment version in module.json." >&2
+            exit 1
+          fi
+
+      - name: Publish GitHub Release
+        if: steps.release.outputs.create_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          gh release create "v${VERSION}" dist/module.json dist/module.zip \
+            --target "$GITHUB_SHA" \
+            --title "Action HUD v${VERSION}" \
+            --generate-notes
