@@ -1,3 +1,8 @@
+## 0.1.85
+- Corrected the bottom toolbar to use the D&D 5e character-sheet icons for Spells (`fa-book`), Features (`fa-list`), and Skills (`fa-briefcase`).
+- Kept Inventory on the requested white D&D 5e `backpack.svg` asset.
+- Corrected the toolbar order so Skills appears before Core Combat Actions.
+
 ## 0.1.84
 - Replaced the bottom toolbar's Spells, Inventory, Features, and Skills icons with the corresponding D&D 5e system SVG artwork, displayed in white.
 - Swapped the Skills and Core Combat Actions buttons so Core Combat Actions appears before Skills.
