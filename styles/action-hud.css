@@ -1088,3 +1088,35 @@ body.ahud-item-dragging .ahud-anchor-tooltip-pin { visibility: hidden !important
 .ahud-shove-result-label { display: inline-block; font-weight: 800; }
 .ahud-shove-result.is-success .ahud-shove-result-label { color: #5a9e6e; }
 .ahud-shove-result.is-failure .ahud-shove-result-label { color: #c44d3f; }
+
+
+/* Third-party actor readouts (for example, Stealth Observer). */
+.ahud .ahud-external-readouts {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-height: 0;
+  margin-top: 4px;
+}
+.ahud .ahud-external-readouts[hidden],
+.ahud .ahud-external-readouts:empty {
+  display: none !important;
+}
+.ahud .ahud-external-readout {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 28px;
+  height: 23px;
+  padding: 2px 6px;
+  border: 1px solid rgba(117, 190, 177, .35);
+  border-radius: 5px;
+  color: var(--ahud-text, #e8eeee);
+  background: rgba(24, 31, 35, .76);
+  font-size: 12px;
+  line-height: 1;
+}
+.ahud .ahud-external-readout > i { font-size: 11px; }
+.ahud .ahud-external-readout > b { font-size: 12px; font-weight: 800; }
