@@ -416,3 +416,9 @@
 ## 0.1.51
 - Improved GM Encounter Controls with live combat status, context-aware control states, and All / In Combat / Not in Combat filters.
 - Added per-token add/remove controls so the GM can manage combatants directly from the scene-token list without selecting tokens on the canvas. Search and filter state survive panel refreshes.
+
+
+## 0.1.87
+- Added an external actor-readout slot below Hit Dice in the character identity area.
+- Added a refresh hook for third-party readout providers.
+- Exposed `api.refreshExternalReadouts()` for integrations such as Stealth Observer.
