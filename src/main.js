@@ -72,6 +72,7 @@ Hooks.once("ready", () => {
   registerRefreshHooks();
   registerShoveDefenseSocket();
   registerShoveRollFastForwardWrapper();
+  game.modules.get(MODULE_ID).api = { ...(game.modules.get(MODULE_ID).api ?? {}), refreshExternalReadouts: () => queueRefresh() };
   createHud();
   refreshContext();
   restorePosition();
@@ -154,7 +155,8 @@ function registerRefreshHooks() {
     // Optional Indy Dice Chronicle integration; only a no-payload invalidation event
     // is listened for, and roll values are pulled through Chronicle's visibility-aware API.
     "indy-dice-chronicle.latestRollChanged", "indy-dice-chronicle.sessionStateChanged",
-    "indy-dice-chronicle.integrationReady"
+    "indy-dice-chronicle.integrationReady",
+    "stealth-observer.readoutsChanged"
   ]) Hooks.on(hook, refresh);
   Hooks.on("renderActorSheet", (app, html) => attachSheetDragSource(html, app?.actor ?? app?.object ?? null));
   // Help's attack benefit is consumed after the first non-helper attack roll against the
@@ -203,6 +205,7 @@ function createHud() {
             </button>
           </div>
           <div class="ahud-hit-dice" data-hit-dice aria-label="Hit dice"></div>
+          <div class="ahud-external-readouts" data-external-readouts aria-label="Additional readouts" hidden></div>
         </div>
         <div class="ahud-movement-menu" data-movement-menu hidden></div>
       </div>
@@ -523,6 +526,44 @@ function closeContextPopups() {
   }
   hudDialogs.clear();
 }
+function renderStealthObserverReadouts(actor, token) {
+  const host = hudRoot?.querySelector("[data-external-readouts]");
+  if (!host) return;
+  host.replaceChildren();
+  const module = game.modules?.get?.("stealth-observer");
+  const getter = module?.api?.getActionHUDReadouts;
+  if (!module?.active || typeof getter !== "function" || !actor) {
+    host.hidden = true;
+    return;
+  }
+  let entries = [];
+  try {
+    entries = getter(token ?? actor) ?? [];
+  } catch (error) {
+    console.warn(`${MODULE_ID} | Stealth Observer readout integration failed.`, error);
+    host.hidden = true;
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry || typeof entry.icon !== "string") continue;
+    const badge = document.createElement("span");
+    badge.className = `ahud-external-readout ${String(entry.className ?? "").replace(/[^a-z0-9_-]/gi, "")}`;
+    badge.title = String(entry.title ?? entry.key ?? "Additional readout");
+    badge.setAttribute("aria-label", badge.title);
+    const icon = document.createElement("i");
+    icon.className = `fas ${entry.icon}`;
+    icon.setAttribute("aria-hidden", "true");
+    badge.appendChild(icon);
+    if (entry.value !== null && entry.value !== undefined && entry.value !== "") {
+      const value = document.createElement("b");
+      value.textContent = String(entry.value);
+      badge.appendChild(value);
+    }
+    host.appendChild(badge);
+  }
+  host.hidden = entries.length === 0;
+}
+
 function refreshContext() {
   if (!hudRoot || !canvas.ready) return;
   activeToken = getControlledOwnedToken();
@@ -603,6 +644,7 @@ function refreshContext() {
   notice.hidden = canAct || (game.user.isGM && gmMode);
   notice.textContent = game.i18n.localize(activeActor ? "ACTION_HUD.noTokenSelected" : "ACTION_HUD.noActorNotice");
   renderHealth(activeActor);
+  renderStealthObserverReadouts(activeActor, activeToken);
   renderMovement(activeActor);
   renderResources(activeActor);
   renderFavorites();
