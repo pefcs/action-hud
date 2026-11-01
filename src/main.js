@@ -209,11 +209,11 @@ function createHud() {
       <div class="ahud-actions">
         <div class="ahud-favorites" aria-label="Favorites"><div class="ahud-slots" data-slots></div></div>
         <div class="ahud-tools">
-          <button type="button" data-action="drawer" data-drawer="spells" title="Spellbook"><img src="systems/dnd5e/icons/svg/items/spell.svg" alt="" aria-hidden="true"></button>
+          <button type="button" data-action="drawer" data-drawer="spells" title="Spellbook"><i class="fas fa-book"></i></button>
           <button type="button" data-action="drawer" data-drawer="inventory" title="Inventory"><img src="systems/dnd5e/icons/svg/backpack.svg" alt="" aria-hidden="true"></button>
-          <button type="button" data-action="drawer" data-drawer="features" title="Features"><img src="systems/dnd5e/icons/svg/items/feature.svg" alt="" aria-hidden="true"></button>
+          <button type="button" data-action="drawer" data-drawer="features" title="Features"><i class="fas fa-list"></i></button>
+          <button type="button" data-action="drawer" data-drawer="checks" title="Skills, ability checks and saves"><i class="fas fa-briefcase"></i></button>
           <button type="button" data-action="drawer" data-drawer="combat-actions" title="Core Combat Actions" aria-label="Core Combat Actions"><i class="fas fa-hand-fist"></i></button>
-          <button type="button" data-action="drawer" data-drawer="checks" title="Skills, ability checks and saves"><img src="systems/dnd5e/icons/svg/trait-skills.svg" alt="" aria-hidden="true"></button>
           <button type="button" data-action="settings" title="HUD settings"><i class="fas fa-sliders"></i></button>
           <button type="button" data-action="lock" title="Lock HUD position"><i class="fas fa-lock-open"></i></button>
           <button type="button" data-action="drawer" data-drawer="quick-dice" title="Quick Dice" aria-label="Quick Dice"><i class="fas fa-dice"></i></button>
