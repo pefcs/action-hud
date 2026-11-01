@@ -1,3 +1,7 @@
+## 0.1.84
+- Replaced the bottom toolbar's Spells, Inventory, Features, and Skills icons with the corresponding D&D 5e system SVG artwork, displayed in white.
+- Swapped the Skills and Core Combat Actions buttons so Core Combat Actions appears before Skills.
+
 ## 0.1.83
 - Added Midi-QoL 14.6.5 `hasUsedAction(actor)` support to the item availability check. Action-activation items are now marked unavailable after Midi-QoL records the actor's Action as used, while existing bonus-action/reaction checks and compatibility fallbacks remain intact.
 
