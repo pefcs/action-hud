@@ -1,3 +1,6 @@
+## 0.1.86
+- Reduced the white Inventory backpack SVG to 14×14 px and centered it so its visual size matches the neighboring Font Awesome toolbar icons.
+
 ## 0.1.85
 - Corrected the bottom toolbar to use the D&D 5e character-sheet icons for Spells (`fa-book`), Features (`fa-list`), and Skills (`fa-briefcase`).
 - Kept Inventory on the requested white D&D 5e `backpack.svg` asset.
