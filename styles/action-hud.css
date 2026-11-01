@@ -182,6 +182,7 @@
 }
 #action-hud-root .ahud-tools { display: flex; flex: 0 0 auto; align-items: center; justify-content: center; flex-flow: row nowrap; gap: 4px; padding: 0; border-top: 0; }
 #action-hud-root .ahud-tools button { width: calc(27px * var(--ahud-scale)); height: calc(26px * var(--ahud-scale)); font-size: 1.02em; }
+#action-hud-root .ahud-tools button > img { display: block; width: 19px; height: 19px; object-fit: contain; filter: brightness(0) invert(1); pointer-events: none; }
 #action-hud-root .ahud-tools button[data-action="settings"], #action-hud-root .ahud-tools button[data-action="lock"] { color: var(--ahud-accent-bright); }
 #action-hud-root .ahud-tools button.is-selected { border-color: var(--ahud-accent-bright); color: var(--ahud-accent-bright); box-shadow: inset 0 0 0 1px rgba(124,207,192,.2); }
 #action-hud-root .ahud-tools button[data-gm-only] { width: auto; min-width: calc(30px * var(--ahud-scale)); padding: 0 7px; gap: 6px; }
