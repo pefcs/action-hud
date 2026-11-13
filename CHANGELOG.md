@@ -1,3 +1,6 @@
+## 0.1.88
+- Added event-specific HUD refreshes so item, effect, combat, movement, readout, and dice updates redraw only the affected sections. Full refreshes remain for actor changes and context switches.
+
 ## 0.1.86
 - Reduced the white Inventory backpack SVG to 14×14 px and centered it so its visual size matches the neighboring Font Awesome toolbar icons.
 
