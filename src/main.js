@@ -10,6 +10,7 @@ const DEFAULT_POSITION = { left: 50, bottom: 12 };
 let hudRoot = null;
 let activeActor = null;
 let activeToken = null;
+let hudResizeObserver = null;
 let gmMode = false;
 let collapsed = false;
 let locked = false;
@@ -62,6 +63,7 @@ window.addEventListener("resize", () => {
   const state = hoverTooltipState;
   if (state && !state.pinned && state.card?.isConnected) positionSpellTooltip(state.card, state.anchor, state);
   if (state?.anchorPin) positionAnchorTooltipPin(state);
+  requestAnimationFrame(() => clampHudPosition());
 });
 
 Hooks.once("ready", () => {
@@ -90,6 +92,7 @@ function registerSettings() {
     onChange: value => {
       if (hudRoot) hudRoot.style.setProperty("--ahud-scale", String(value));
       applyTooltipScale(value);
+      requestAnimationFrame(() => clampHudPosition());
     }
   });
 }
@@ -265,6 +268,9 @@ function createHud() {
     </button>
     <div class="ahud-effect-strip" data-effect-strip aria-label="Active effects" hidden></div>`;
   document.body.appendChild(hudRoot);
+  hudResizeObserver?.disconnect();
+  hudResizeObserver = new ResizeObserver(() => clampHudPosition());
+  hudResizeObserver.observe(hudRoot);
   hudRoot.style.setProperty("--ahud-scale", String(game.settings.get(MODULE_ID, "scale") ?? 1));
   bindHudEvents();
   hudRoot.hidden = !game.settings.get(MODULE_ID, "enabled");
@@ -457,6 +463,22 @@ function restorePosition() {
   }
   locked = Boolean(game.user.getFlag(MODULE_ID, "locked"));
   setLocked(locked, false);
+  clampHudPosition();
+}
+function clampHudPosition() {
+  if (!hudRoot || hudRoot.hidden || dragOffset) return;
+  const rect = hudRoot.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  const left = Math.max(0, Math.min(Math.max(0, window.innerWidth - rect.width), rect.left));
+  const top = Math.max(0, Math.min(Math.max(0, window.innerHeight - rect.height), rect.top));
+  if (Math.abs(left - rect.left) < 0.5 && Math.abs(top - rect.top) < 0.5) return;
+
+  hudRoot.style.left = `${left + rect.width / 2}px`;
+  hudRoot.style.top = `${top}px`;
+  hudRoot.style.bottom = "auto";
+  hudRoot.style.transform = "translateX(-50%)";
+  const centerX = Math.max(0, Math.min(1, (left + rect.width / 2) / Math.max(window.innerWidth, 1)));
+  game.user.setFlag(MODULE_ID, "position", { centerX, top: `${top}px` });
 }
 function setLocked(value, persist = true) {
   locked = value;
@@ -472,12 +494,14 @@ function setCollapsed(value) {
   hudRoot.classList.toggle("is-collapsed", collapsed);
   updateNextTurnVisibility();
   renderEffectsStrip();
+  requestAnimationFrame(() => clampHudPosition());
 }
 function toggleHud() {
   if (!hudRoot) return;
   const enabled = hudRoot.hidden;
   hudRoot.hidden = !enabled;
   game.settings.set(MODULE_ID, "enabled", enabled);
+  if (enabled) requestAnimationFrame(() => clampHudPosition());
 }
 function queueRefresh(...sections) {
   for (const section of sections.length ? sections : ["all"]) pendingRefreshSections.add(section);

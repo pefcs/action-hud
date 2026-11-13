@@ -1,3 +1,6 @@
+## 0.1.89
+- Keep the HUD visible across screen sizes by clamping its saved position to the current viewport on restore, resize, and HUD size changes.
+
 ## 0.1.88
 - Added event-specific HUD refreshes so item, effect, combat, movement, readout, and dice updates redraw only the affected sections. Full refreshes remain for actor changes and context switches.
 

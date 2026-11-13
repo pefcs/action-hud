@@ -2,7 +2,7 @@
   "id": "action-hud",
   "title": "Action HUD",
   "description": "A compact, customizable action HUD for Foundry VTT and D&D 5e, styled to complement Roll Director. Supports external actor readouts through a public integration slot.",
-  "version": "0.1.88",
+  "version": "0.1.89",
   "authors": [
     {
       "name": "OpenAI",
