@@ -84,7 +84,11 @@ Hooks.once("ready", () => {
 function registerSettings() {
   game.settings.register(MODULE_ID, "enabled", {
     name: "ACTION_HUD.name", hint: "ACTION_HUD.toggle", scope: "client", config: true,
-    type: Boolean, default: true, onChange: value => { if (hudRoot) hudRoot.hidden = !value; }
+    type: Boolean, default: true, onChange: value => {
+      if (!hudRoot) return;
+      hudRoot.hidden = !value;
+      if (value) requestAnimationFrame(() => clampHudPosition());
+    }
   });
   game.settings.register(MODULE_ID, "scale", {
     name: "ACTION_HUD.scale", hint: "ACTION_HUD.scaleHint", scope: "client", config: true,
@@ -427,35 +431,42 @@ function endMove() {
   if (hudRoot) {
     const rect = hudRoot.getBoundingClientRect();
     const centerX = Math.max(0, Math.min(1, (rect.left + rect.width / 2) / Math.max(window.innerWidth, 1)));
-    game.user.setFlag(MODULE_ID, "position", { centerX, top: `${rect.top}px` });
+    const maxTop = Math.max(0, window.innerHeight - rect.height);
+    const topRatio = maxTop > 0 ? Math.max(0, Math.min(1, rect.top / maxTop)) : 0;
+    game.user.setFlag(MODULE_ID, "position", { centerX, topRatio });
   }
   const panel = hudRoot?.querySelector("[data-drawer-panel]");
   if (panel && !panel.hidden && panel.dataset.currentDrawer === "conditions" && game.user.isGM && gmMode) openDrawer("conditions", true);
 }
 function restorePosition() {
   const position = game.user.getFlag(MODULE_ID, "position");
-  const width = hudRoot.getBoundingClientRect().width || hudRoot.offsetWidth || 0;
-  const minCenter = width / 2;
-  const maxCenter = Math.max(minCenter, window.innerWidth - width / 2);
-  if (Number.isFinite(Number(position?.centerX)) && position?.top) {
-    // New format stores a normalized horizontal center so widths can change between GM and actor bars.
-    const centerPx = Math.max(minCenter, Math.min(maxCenter, Number(position.centerX) * window.innerWidth));
-    hudRoot.style.left = `${centerPx}px`;
-    hudRoot.style.top = position.top;
-    hudRoot.style.bottom = "auto";
-    hudRoot.style.transform = "translateX(-50%)";
-  } else if (position?.left && position?.top) {
-    // Migrate the previous top-left coordinate format to the new center-anchored format.
-    let centerRatio;
-    if (String(position.left).trim().endsWith("%")) centerRatio = Number.parseFloat(position.left) / 100;
-    else centerRatio = (Number.parseFloat(position.left) + width / 2) / Math.max(window.innerWidth, 1);
-    centerRatio = Math.max(minCenter / Math.max(window.innerWidth, 1), Math.min(maxCenter / Math.max(window.innerWidth, 1), centerRatio));
-    hudRoot.style.left = `${centerRatio * 100}%`;
-    hudRoot.style.top = position.top;
-    hudRoot.style.bottom = "auto";
-    hudRoot.style.transform = "translateX(-50%)";
-    game.user.setFlag(MODULE_ID, "position", { centerX: centerRatio, top: position.top });
-  } else {
+  if (!hudRoot.hidden && position) {
+    const rect = hudRoot.getBoundingClientRect();
+    const maxTop = Math.max(0, window.innerHeight - rect.height);
+    let centerX = Number(position.centerX);
+    if (!Number.isFinite(centerX) && position.left) {
+      centerX = String(position.left).trim().endsWith("%")
+        ? Number.parseFloat(position.left) / 100
+        : (Number.parseFloat(position.left) + rect.width / 2) / Math.max(window.innerWidth, 1);
+    }
+    let topRatio = Number(position.topRatio);
+    if (!Number.isFinite(topRatio) && position.top) {
+      const savedTop = Number.parseFloat(position.top);
+      topRatio = maxTop > 0 && Number.isFinite(savedTop) ? savedTop / maxTop : 0;
+    }
+    if (Number.isFinite(centerX) && Number.isFinite(topRatio)) {
+      centerX = Math.max(0, Math.min(1, centerX));
+      topRatio = Math.max(0, Math.min(1, topRatio));
+      // Ratios preserve placement across viewport and HUD size changes.
+      hudRoot.style.left = `${centerX * 100}%`;
+      hudRoot.style.top = `${topRatio * maxTop}px`;
+      hudRoot.style.bottom = "auto";
+      hudRoot.style.transform = "translateX(-50%)";
+      if (!Number.isFinite(Number(position.centerX)) || !Number.isFinite(Number(position.topRatio))) {
+        game.user.setFlag(MODULE_ID, "position", { centerX, topRatio });
+      }
+    }
+  } else if (!position) {
     hudRoot.style.left = `${DEFAULT_POSITION.left}%`;
     hudRoot.style.bottom = `${DEFAULT_POSITION.bottom}px`;
     hudRoot.style.top = "auto";
@@ -469,16 +480,38 @@ function clampHudPosition() {
   if (!hudRoot || hudRoot.hidden || dragOffset) return;
   const rect = hudRoot.getBoundingClientRect();
   if (!rect.width || !rect.height) return;
-  const left = Math.max(0, Math.min(Math.max(0, window.innerWidth - rect.width), rect.left));
-  const top = Math.max(0, Math.min(Math.max(0, window.innerHeight - rect.height), rect.top));
-  if (Math.abs(left - rect.left) < 0.5 && Math.abs(top - rect.top) < 0.5) return;
+  const position = game.user.getFlag(MODULE_ID, "position");
+  const maxLeft = Math.max(0, window.innerWidth - rect.width);
+  const maxTop = Math.max(0, window.innerHeight - rect.height);
+  let centerX = Number(position?.centerX);
+  if (!Number.isFinite(centerX) && position?.left) {
+    centerX = String(position.left).trim().endsWith("%")
+      ? Number.parseFloat(position.left) / 100
+      : (Number.parseFloat(position.left) + rect.width / 2) / Math.max(window.innerWidth, 1);
+  }
+  if (!Number.isFinite(centerX)) centerX = (rect.left + rect.width / 2) / Math.max(window.innerWidth, 1);
+  const left = Math.max(0, Math.min(maxLeft, centerX * window.innerWidth - rect.width / 2));
+  let topRatio = Number(position?.topRatio);
+  if (!Number.isFinite(topRatio) && position?.top) {
+    const savedTop = Number.parseFloat(position.top);
+    topRatio = maxTop > 0 && Number.isFinite(savedTop) ? savedTop / maxTop : 0;
+  }
+  if (!Number.isFinite(topRatio)) topRatio = maxTop > 0 ? rect.top / maxTop : 0;
+  topRatio = Math.max(0, Math.min(1, topRatio));
+  const requestedTop = Number.isFinite(topRatio) ? topRatio * maxTop : rect.top;
+  const top = Math.max(0, Math.min(maxTop, requestedTop));
+  const changed = Math.abs(left - rect.left) >= 0.5 || Math.abs(top - rect.top) >= 0.5;
 
-  hudRoot.style.left = `${left + rect.width / 2}px`;
-  hudRoot.style.top = `${top}px`;
-  hudRoot.style.bottom = "auto";
-  hudRoot.style.transform = "translateX(-50%)";
-  const centerX = Math.max(0, Math.min(1, (left + rect.width / 2) / Math.max(window.innerWidth, 1)));
-  game.user.setFlag(MODULE_ID, "position", { centerX, top: `${top}px` });
+  if (changed) {
+    hudRoot.style.left = `${left + rect.width / 2}px`;
+    hudRoot.style.top = `${top}px`;
+    hudRoot.style.bottom = "auto";
+    hudRoot.style.transform = "translateX(-50%)";
+  }
+  if (position && (!Number.isFinite(Number(position.centerX)) || !Number.isFinite(Number(position.topRatio)))) {
+    // Upgrade older pixel coordinates once the HUD is visible and can be measured.
+    game.user.setFlag(MODULE_ID, "position", { centerX: Math.max(0, Math.min(1, centerX)), topRatio });
+  }
 }
 function setLocked(value, persist = true) {
   locked = value;

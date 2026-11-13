@@ -1,3 +1,6 @@
+## 0.1.90
+- Store the HUD's vertical position as a ratio of its available screen travel, so it returns to the same relative position when the window is resized. Existing pixel-based positions are migrated on load.
+
 ## 0.1.89
 - Keep the HUD visible across screen sizes by clamping its saved position to the current viewport on restore, resize, and HUD size changes.
 
