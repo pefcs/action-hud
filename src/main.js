@@ -15,6 +15,7 @@ let collapsed = false;
 let locked = false;
 let dragOffset = null;
 let refreshQueued = false;
+const pendingRefreshSections = new Set();
 let lastContextKey = null;
 const hudDialogs = new Set();
 // One transient hover card can coexist with any number of pinned, draggable cards.
@@ -72,7 +73,7 @@ Hooks.once("ready", () => {
   registerRefreshHooks();
   registerShoveDefenseSocket();
   registerShoveRollFastForwardWrapper();
-  game.modules.get(MODULE_ID).api = { ...(game.modules.get(MODULE_ID).api ?? {}), refreshExternalReadouts: () => queueRefresh() };
+  game.modules.get(MODULE_ID).api = { ...(game.modules.get(MODULE_ID).api ?? {}), refreshExternalReadouts: () => queueRefresh("readouts") };
   createHud();
   refreshContext();
   restorePosition();
@@ -128,7 +129,6 @@ function registerCanvasControl() {
 }
 
 function registerRefreshHooks() {
-  const refresh = () => queueRefresh();
   // Token control drives GM mode: selecting a token immediately opens its actor HUD;
   // clearing the selection restores the GM control bar. The GM toggle can still pin GM mode
   // until the next canvas selection change.
@@ -136,28 +136,50 @@ function registerRefreshHooks() {
     if (game.user.isGM) {
       if (controlled) {
         gmMode = false;
-        queueRefresh();
+        queueRefresh("all");
       } else {
         // On deselection, re-check after Foundry has updated the controlled-token collection.
         requestAnimationFrame(() => {
           gmMode = !getControlledOwnedToken();
-          queueRefresh();
+          queueRefresh("all");
         });
       }
-    } else queueRefresh();
+    } else queueRefresh("all");
   });
-  for (const hook of [
-    "updateActor", "updateToken", "updateItem", "createActiveEffect", "updateActiveEffect",
-    "deleteActiveEffect", "updateCombat", "deleteCombat", "createCombat", "canvasReady",
-    // Midi-QoL emits these when it records a used reaction/bonus action. Actor/effect updates
-    // remain the primary source; these hooks make the HUD react immediately when available.
-    "midi-qol.setReactionUsed", "midi-qol.setBonusReactionUsed", "midi-qol.setBonusActionUsed",
-    // Optional Indy Dice Chronicle integration; only a no-payload invalidation event
-    // is listened for, and roll values are pulled through Chronicle's visibility-aware API.
-    "indy-dice-chronicle.latestRollChanged", "indy-dice-chronicle.sessionStateChanged",
-    "indy-dice-chronicle.integrationReady",
-    "stealth-observer.readoutsChanged"
-  ]) Hooks.on(hook, refresh);
+  Hooks.on("updateActor", actor => {
+    if (!activeActor || actor?.uuid === activeActor.uuid) queueRefresh("actor");
+  });
+  Hooks.on("updateToken", (token, changes) => {
+    const activeTokenId = activeToken?.document?.id ?? activeToken?.id;
+    const changedTokenId = token?.id ?? token?.document?.id;
+    if (activeTokenId == null || String(activeTokenId) !== String(changedTokenId)) return;
+    const changedFields = changes ?? {};
+    if (Object.prototype.hasOwnProperty.call(changedFields, "actorId") || Object.prototype.hasOwnProperty.call(changedFields, "actorLink")) {
+      queueRefresh("all");
+    } else if (Object.prototype.hasOwnProperty.call(changedFields, "movementAction")) queueRefresh("movement");
+    else queueRefresh("context");
+  });
+  Hooks.on("updateItem", item => {
+    if (!activeActor || item?.parent?.uuid === activeActor.uuid) queueRefresh("items");
+  });
+  for (const hook of ["createActiveEffect", "updateActiveEffect", "deleteActiveEffect"]) {
+    Hooks.on(hook, effect => {
+      if (!activeActor || effect?.parent?.uuid === activeActor.uuid) queueRefresh("effects");
+    });
+  }
+  for (const hook of ["updateCombat", "deleteCombat", "createCombat"]) Hooks.on(hook, () => queueRefresh("combat"));
+  Hooks.on("canvasReady", () => queueRefresh("all"));
+  // Midi-QoL emits these when it records a used reaction/bonus action. Actor/effect updates
+  // remain the primary source; these hooks make the HUD react immediately when available.
+  for (const hook of ["midi-qol.setReactionUsed", "midi-qol.setBonusReactionUsed", "midi-qol.setBonusActionUsed"]) {
+    Hooks.on(hook, () => queueRefresh("favorites"));
+  }
+  // Optional Indy Dice Chronicle integration; only a no-payload invalidation event
+  // is listened for, and roll values are pulled through Chronicle's visibility-aware API.
+  for (const hook of ["indy-dice-chronicle.latestRollChanged", "indy-dice-chronicle.sessionStateChanged", "indy-dice-chronicle.integrationReady"]) {
+    Hooks.on(hook, () => queueRefresh("mana"));
+  }
+  Hooks.on("stealth-observer.readoutsChanged", () => queueRefresh("readouts"));
   Hooks.on("renderActorSheet", (app, html) => attachSheetDragSource(html, app?.actor ?? app?.object ?? null));
   // Help's attack benefit is consumed after the first non-helper attack roll against the
   // marked target. Midi-QoL still owns the attack workflow and reads the grant flag normally.
@@ -457,10 +479,16 @@ function toggleHud() {
   hudRoot.hidden = !enabled;
   game.settings.set(MODULE_ID, "enabled", enabled);
 }
-function queueRefresh() {
+function queueRefresh(...sections) {
+  for (const section of sections.length ? sections : ["all"]) pendingRefreshSections.add(section);
   if (refreshQueued) return;
   refreshQueued = true;
-  requestAnimationFrame(() => { refreshQueued = false; refreshContext(); });
+  requestAnimationFrame(() => {
+    refreshQueued = false;
+    const requestedSections = new Set(pendingRefreshSections);
+    pendingRefreshSections.clear();
+    refreshContext(requestedSections.has("all") ? new Set(["all"]) : requestedSections);
+  });
 }
 
 function getControlledOwnedToken() {
@@ -564,8 +592,12 @@ function renderStealthObserverReadouts(actor, token) {
   host.hidden = entries.length === 0;
 }
 
-function refreshContext() {
+function refreshContext(sections = new Set(["all"])) {
   if (!hudRoot || !canvas.ready) return;
+  const refreshAll = sections.has("all");
+  const refreshActor = refreshAll || sections.has("actor");
+  const refreshItems = refreshAll || refreshActor || sections.has("items");
+  const refreshFavoritesSection = refreshItems || sections.has("favorites") || sections.has("effects") || sections.has("combat");
   activeToken = getControlledOwnedToken();
   if (game.user.isGM && gmMode) activeActor = null;
   else if (activeToken) activeActor = activeToken.actor;
@@ -643,20 +675,23 @@ function refreshContext() {
   const notice = hudRoot.querySelector("[data-notice]");
   notice.hidden = canAct || (game.user.isGM && gmMode);
   notice.textContent = game.i18n.localize(activeActor ? "ACTION_HUD.noTokenSelected" : "ACTION_HUD.noActorNotice");
-  renderHealth(activeActor);
-  renderStealthObserverReadouts(activeActor, activeToken);
-  renderMovement(activeActor);
-  renderResources(activeActor);
-  renderFavorites();
+  if (refreshActor) renderHealth(activeActor);
+  if (refreshAll || refreshActor || sections.has("readouts")) renderStealthObserverReadouts(activeActor, activeToken);
+  if (refreshActor || sections.has("movement")) renderMovement(activeActor);
+  if (refreshActor) renderResources(activeActor);
+  else if (sections.has("mana")) renderManaGlobe(activeActor);
+  if (refreshFavoritesSection) renderFavorites();
   const weaponSetHost = hudRoot.querySelector("[data-weapon-sets]");
-  if (weaponSetHost) renderWeaponSetToolbar(weaponSetHost, activeActor);
-  refreshInventoryEquipStates();
-  refreshVisibleDrawerResourceIndicators();
+  if (weaponSetHost && refreshItems) renderWeaponSetToolbar(weaponSetHost, activeActor);
+  if (refreshItems) {
+    refreshInventoryEquipStates();
+    refreshVisibleDrawerResourceIndicators();
+  }
   // Populate a brand-new NPC bar once; never reshuffle an existing/customized one.
-  void maybeAutoFillNpcFavorites(activeActor, activeToken);
-  renderEffectsStrip();
+  if (refreshAll || refreshActor) void maybeAutoFillNpcFavorites(activeActor, activeToken);
+  if (refreshAll || refreshActor || sections.has("effects")) renderEffectsStrip();
   const movementMenu = hudRoot.querySelector("[data-movement-menu]");
-  if (movementMenu && !movementMenu.hidden) renderMovementMenu();
+  if ((refreshAll || refreshActor || sections.has("movement")) && movementMenu && !movementMenu.hidden) renderMovementMenu();
 }
 function getConfigDocument() {
   if (activeToken && !activeToken.document.actorLink) return activeToken.document;
