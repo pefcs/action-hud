@@ -1,3 +1,6 @@
+## 0.1.91
+- Enlarged the Favorites bar slots while reducing the HP and mana orb sections to keep the HUD footprint stable.
+
 ## 0.1.90
 - Store the HUD's vertical position as a ratio of its available screen travel, so it returns to the same relative position when the window is resized. Existing pixel-based positions are migrated on load.
 
