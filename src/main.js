@@ -32,6 +32,9 @@ let gmTokenSearchQuery = "";
 let gmTokenFilter = "all";
 const gmEncounterSelectedTokenIds = new Set();
 const npcAutoFillInProgress = new Set();
+const pendingDasInitiative = new Map();
+const dasInitiativeTimers = new Map();
+const requestedDasInitiativeActors = new Map();
 const pendingShoveDefenseRequests = new Set();
 const promptedShoveDefenseRequests = new Set();
 // Transient Shove coordination data lives in memory and SocketLib/module-socket payloads, not chat.
@@ -77,6 +80,7 @@ Hooks.once("ready", () => {
   registerShoveRollFastForwardWrapper();
   game.modules.get(MODULE_ID).api = { ...(game.modules.get(MODULE_ID).api ?? {}), refreshExternalReadouts: () => queueRefresh("readouts") };
   createHud();
+  syncDasBarSuppression();
   refreshContext();
   restorePosition();
 });
@@ -85,10 +89,15 @@ function registerSettings() {
   game.settings.register(MODULE_ID, "enabled", {
     name: "ACTION_HUD.name", hint: "ACTION_HUD.toggle", scope: "client", config: true,
     type: Boolean, default: true, onChange: value => {
+      syncDasBarSuppression();
       if (!hudRoot) return;
       hudRoot.hidden = !value;
       if (value) requestAnimationFrame(() => clampHudPosition());
     }
+  });
+  game.settings.register(MODULE_ID, "suppressDasBar", {
+    name: "ACTION_HUD.suppressDasBar", hint: "ACTION_HUD.suppressDasBarHint", scope: "client", config: true,
+    type: Boolean, default: false, onChange: () => syncDasBarSuppression()
   });
   game.settings.register(MODULE_ID, "scale", {
     name: "ACTION_HUD.scale", hint: "ACTION_HUD.scaleHint", scope: "client", config: true,
@@ -175,6 +184,11 @@ function registerRefreshHooks() {
     });
   }
   for (const hook of ["updateCombat", "deleteCombat", "createCombat"]) Hooks.on(hook, () => queueRefresh("combat"));
+  Hooks.on("createCombatant", combatant => queueDasInitiativeRequest(combatant));
+  // DAS publishes its action budget through the public UI API. These engine events
+  // invalidate the same item/readout views when an activity or turn resolves.
+  for (const hook of ["dnd5e-combat.resolution", "dnd5e-combat.eventTurn", "dnd5e-combat.masteryRest"])
+    Hooks.on(hook, () => queueRefresh("all"));
   Hooks.on("canvasReady", () => queueRefresh("all"));
   // Midi-QoL emits these when it records a used reaction/bonus action. Actor/effect updates
   // remain the primary source; these hooks make the HUD react immediately when available.
@@ -290,6 +304,10 @@ function bindHudEvents() {
     if (state && !state.pinned) {
       state.anchorHovered = Boolean(state.anchor?.matches?.(":hover"));
       state.cardHovered = Boolean(state.card?.matches?.(":hover"));
+      // The drag hides the hover card while the browser moves the item, but the
+      // fixed-position pin button is outside the HUD and can otherwise be orphaned
+      // when the card is removed below.
+      removeAnchorTooltipPin(state);
       if (!state.anchorHovered && !state.cardHovered) {
         state.card?.remove();
         if (hoverTooltipState === state) hoverTooltipState = null;
@@ -353,7 +371,7 @@ function bindHudEvents() {
     else if (action === "team-long-rest") await runTeamRest("long");
     else if (action === "settings") openSettings();
     else if (action === "drawer") openDrawer(button.dataset.drawer);
-    else if (action === "combat-action") await handleCoreCombatAction(button.dataset.combatAction);
+    else if (action === "combat-action") await handleCoreCombatAction(button.dataset.combatAction, event);
     else if (action === "gm-select-token") selectSceneToken(button.dataset.tokenId);
     else if (action === "gm-token-selection") toggleGMEncounterTokenSelection(button.dataset.tokenId, button);
     else if (action === "gm-encounter") await handleGMEncounterAction(button.dataset.encounterAction, button.dataset.tokenId);
@@ -927,7 +945,8 @@ function getFavoriteResourceIndicators(item) {
 function renderTileResourceIndicators(tile, item) {
   tile.querySelector(":scope > .ahud-tile-resource-indicators")?.remove();
   const indicators = getFavoriteResourceIndicators(item);
-  tile.classList.toggle("is-resource-unavailable", Boolean(indicators.length) && indicators.every(indicator => indicator.unavailable));
+  const spellSlotAvailable = item?.type === "spell" && actorHasAvailableSpellSlot(activeActor, item);
+  tile.classList.toggle("is-resource-unavailable", !spellSlotAvailable && Boolean(indicators.length) && indicators.every(indicator => indicator.unavailable));
   if (!indicators.length) return indicators;
   const group = document.createElement("span");
   group.className = "ahud-slot-resource-indicators ahud-tile-resource-indicators";
@@ -1018,7 +1037,8 @@ function renderFavorites() {
         badgeGroup.appendChild(more);
       }
       button.appendChild(badgeGroup);
-      button.classList.toggle("is-resource-unavailable", resourceIndicators.every(indicator => indicator.unavailable));
+      const spellSlotAvailable = item?.type === "spell" && actorHasAvailableSpellSlot(activeActor, item);
+      button.classList.toggle("is-resource-unavailable", !spellSlotAvailable && resourceIndicators.every(indicator => indicator.unavailable));
     }
     // The hotbar intentionally uses a small native title tooltip, not the rich hover card.
     if (entry && !item) button.classList.add("is-missing");
@@ -1687,9 +1707,12 @@ function renderFeaturesPanel(panel) {
   const actor = activeActor;
   const actorItems = actor?.items?.contents ?? [];
   const features = actorItems
-    .filter(item => ["feat", "class", "subclass", "race", "species", "background"].includes(item.type))
+    .filter(item => ["feat", "class", "subclass", "race", "species", "background"].includes(item.type)
+      && (hasUsesOrCharges(item) || getActivityValues(item).length > 0))
     .sort(compareBrowserItemPriority);
 
+  // Category labels and icons come from the actor's class/race/background documents,
+  // even when those documents themselves do not qualify as feature entries.
   const classes = actorItems.filter(item => item.type === "class");
   const subclasses = actorItems.filter(item => item.type === "subclass");
   const raceDocs = actorItems.filter(item => ["race", "species"].includes(item.type));
@@ -2313,10 +2336,12 @@ function renderSpellbookPanel(panel) {
         mark: String(level)
       };
     }),
+    { id: "pact", label: game.i18n.localize("ACTION_HUD.spellTabPactMagic"), mark: "P" },
     { id: "ritual", label: game.i18n.localize("ACTION_HUD.spellTabRituals"), icon: "pentagram" },
     { id: "atwill", label: game.i18n.localize("ACTION_HUD.spellTabAtWill"), icon: "fas fa-infinity" },
     { id: "innate", label: game.i18n.localize("ACTION_HUD.spellTabInnate"), icon: "fas fa-sparkles" },
-    { id: "additional", label: game.i18n.localize("ACTION_HUD.spellTabAdditional"), icon: "fas fa-scroll" }
+    { id: "additional", label: game.i18n.localize("ACTION_HUD.spellTabAdditional"), icon: "fas fa-scroll" },
+    { id: "itemSpells", label: game.i18n.localize("ACTION_HUD.spellTabItemSpells"), icon: "fas fa-scroll" }
   ];
 
   const memberships = new Map();
@@ -2450,33 +2475,93 @@ function renderSpellbookPanel(panel) {
 }
 
 function isSpellbookEligible(item, actor) {
-  const system = item.system ?? {};
-  const level = Number(system.level ?? 0);
   const method = spellMethod(item);
-  // Spells granted by a limited-use item/feature are available through that source,
-  // even when they are not part of the actor's prepared spell list.
-  if (spellHasAdditionalSource(actor, item)) return true;
-  // These methods do not rely on preparation/slot preparation.
-  if (["atwill", "innate", "ritual"].includes(method)) return true;
-  // Cantrips are known abilities, not prepared leveled spells.
-  if (level === 0) return true;
+  // Inventory-granted spells are listed in Item Spells regardless of preparation.
+  if (spellHasInventoryItemSource(actor, item)) return true;
+  // Wizards can cast an unprepared ritual from their spellbook.
+  if (actorHasWizardClass(actor) && (method === "ritual" || spellHasProperty(item, "ritual"))) return true;
+  return isSpellPrepared(item);
+}
+
+function actorHasWizardClass(actor) {
+  const classItems = actor?.items?.contents ?? [];
+  if (classItems.some(item => item.type === "class" && String(item.system?.identifier ?? "").toLowerCase() === "wizard")) return true;
+  const classes = actor?.system?.classes;
+  return Boolean(classes?.wizard ?? classes?.get?.("wizard"));
+}
+
+function isSpellPrepared(item) {
+  const system = item?.system ?? {};
   if (system.prepared !== undefined && system.prepared !== null) return Number(system.prepared) > 0;
   const preparation = system.preparation;
-  if (preparation) {
-    if (typeof preparation.prepared === "boolean") return preparation.prepared;
-    if (typeof preparation.mode === "string") return ["prepared", "always"].includes(preparation.mode);
-  }
+  if (typeof preparation?.prepared === "boolean") return preparation.prepared;
+  if (typeof preparation?.mode === "string") return ["prepared", "always"].includes(preparation.mode.toLowerCase());
   // Legacy/manual spell data without a preparation field is not explicitly unprepared.
   return true;
 }
 
 function spellMethod(item) {
   const system = item.system ?? {};
-  const method = String(system.method ?? "").toLowerCase();
-  if (method) return method;
+  const normalize = value => String(value ?? "").toLowerCase().replace(/[^a-z]/g, "");
+  const method = normalize(system.method);
+  if (method) {
+    if (["spell", "spellcasting"].includes(method)) return "spellcasting";
+    if (["pact", "pactmagic"].includes(method)) return "pact";
+    if (["innate", "innatespellcasting"].includes(method)) return "innate";
+    if (["ritual", "ritualonly"].includes(method)) return "ritual";
+    if (["atwill", "dragonmarked"].includes(method)) return method;
+    return method;
+  }
   const legacyMode = String(system.preparation?.mode ?? "").toLowerCase();
   if (["atwill", "innate", "ritual"].includes(legacyMode)) return legacyMode;
-  return "spell";
+  return "spellcasting";
+}
+
+function spellSlotRecord(actor, level) {
+  if (!actor || !Number.isFinite(level) || level < 1) return null;
+  return actor.system?.spells?.[`spell${level}`] ?? null;
+}
+
+function spellSlotMaximum(slot) {
+  for (const candidate of [slot?.max, slot?.override, slot?.value]) {
+    const maximum = Number(candidate);
+    if (Number.isFinite(maximum) && maximum > 0) return maximum;
+  }
+  return 0;
+}
+
+function spellSlotRemaining(slot) {
+  const maximum = spellSlotMaximum(slot);
+  const raw = slot?.value;
+  const value = raw !== undefined && raw !== null && raw !== ""
+    ? Number(raw)
+    : maximum - Number(slot?.spent ?? 0);
+  return Number.isFinite(value) ? Math.max(0, value) : 0;
+}
+
+function actorHasSpellSlotAtLevel(actor, item) {
+  const level = Number(item?.system?.level ?? 0);
+  if (level < 1) return true;
+  if (spellMethod(item) === "pact") {
+    const pact = actor?.system?.spells?.pact;
+    const pactLevel = Number(pact?.level ?? 0);
+    return spellSlotMaximum(pact) > 0 && pactLevel >= level;
+  }
+  return spellSlotMaximum(spellSlotRecord(actor, level)) > 0;
+}
+
+function actorHasAvailableSpellSlot(actor, item) {
+  const level = Number(item?.system?.level ?? 0);
+  if (level < 1) return false;
+  const spells = actor?.system?.spells ?? {};
+  // A leveled spell may be cast with a higher-level slot. Pact slots can also cast
+  // lower-level spells when their slot level is high enough.
+  for (let slotLevel = level; slotLevel <= 9; slotLevel++) {
+    const slot = spells[`spell${slotLevel}`];
+    if (spellSlotMaximum(slot) > 0 && spellSlotRemaining(slot) > 0) return true;
+  }
+  const pact = spells.pact;
+  return Number(pact?.level ?? 0) >= level && spellSlotMaximum(pact) > 0 && spellSlotRemaining(pact) > 0;
 }
 
 function spellHasProperty(item, property) {
@@ -2524,7 +2609,7 @@ function spellSourceItem(actor, item) {
   }
 
   // Cached spells can point to an Activity UUID on the original actor item. Resolve the
-  // owning item so subclass-granted spells are not mistaken for charge-based item spells.
+  // owning item so subclass-granted spells are not mistaken for non-class item spells.
   const cachedFor = item.getFlag?.("dnd5e", "cachedFor");
   if (typeof cachedFor === "string" && cachedFor) {
     try {
@@ -2544,40 +2629,39 @@ function spellSourceItem(actor, item) {
   return null;
 }
 
-function spellHasAdditionalSource(actor, item) {
+function spellHasInventoryItemSource(actor, item) {
   const source = spellSourceItem(actor, item);
   if (!source) return false;
-  const sourceType = String(source.type ?? source.documentName ?? "").toLowerCase();
-  // Class and subclass spells, including always-prepared subclass spells, normally use
-  // the spell-slot category. Additional is reserved for a linked item/feature with uses.
-  if (["class", "subclass"].includes(sourceType)) return false;
-  return hasUsesOrCharges(source) || hasUsesOrCharges(item);
+  // Only real inventory item types get the dedicated scroll tab. Feats, class
+  // features, subclasses, species, and backgrounds follow spell method/slot rules.
+  return ["weapon", "equipment", "consumable", "tool", "loot", "container", "backpack"]
+    .includes(String(source.type ?? "").toLowerCase());
 }
 
 function spellbookCategories(actor, item) {
   const method = spellMethod(item);
   const level = Number(item.system?.level ?? 0);
   const categories = [];
-  const additional = spellHasAdditionalSource(actor, item);
+  // Inventory-linked spells belong only to Item Spells, even when they are rituals.
+  if (spellHasInventoryItemSource(actor, item)) return ["itemSpells"];
+  const prepared = isSpellPrepared(item);
+  const ritual = method === "ritual" || spellHasProperty(item, "ritual");
+  const wizardUnpreparedRitual = actorHasWizardClass(actor) && ritual && !prepared;
 
-  // Cantrips always live in Cantrips, regardless of where they came from. A cantrip
-  // with a linked charge-based source may also appear in Additional, but never in a
-  // leveled spell-slot tab.
-  if (level === 0) categories.push("cantrip");
-  else if (method === "atwill") categories.push("atwill");
-  else if (method === "innate") categories.push("innate");
-  else if (method === "ritual") categories.push("ritual");
-  else if (additional) categories.push("additional");
-  else categories.push(`level${level}`);
+  // Wizards may cast an unprepared ritual, but it appears only under Rituals.
+  if (wizardUnpreparedRitual) return ["ritual"];
+  if (method === "ritual") return ["ritual"];
 
-  // Additional spells can overlap with explicit methods (At-Will, Innate, Ritual),
-  // but regular limited-use item spells should not also appear in the spell-slot level.
-  if (additional) categories.push("additional");
-  // Ritual-capable spells remain available in the Ritual tab as well as their main category.
-  if (method !== "ritual" && spellHasProperty(item, "ritual")) categories.push("ritual");
-  // Cantrips explicitly granted as at-will/innate spells can still be found in those tabs.
-  if (level === 0 && method === "atwill") categories.push("atwill");
-  if (level === 0 && method === "innate") categories.push("innate");
+  if (method === "spellcasting") {
+    if (level === 0) categories.push("cantrip");
+    else if (actorHasSpellSlotAtLevel(actor, item)) categories.push(`level${level}`);
+    else categories.push("additional");
+  } else if (method === "pact") {
+    categories.push(actorHasSpellSlotAtLevel(actor, item) ? "pact" : "additional");
+  } else categories.push("additional");
+
+  // Prepared ritual-tagged spells also appear in Rituals, alongside their method tab.
+  if (ritual && prepared) categories.push("ritual");
   return [...new Set(categories)];
 }
 
@@ -2611,8 +2695,10 @@ function spellTooltipDetails(item, activationTypes) {
   const school = CONFIG.DND5E.spellSchools?.[item.system?.school]?.label;
   if (school) details.push(game.i18n.localize(school));
   if (spellHasProperty(item, "ritual") || method === "ritual") details.push(game.i18n.localize("ACTION_HUD.spellTabRituals"));
+  if (method === "pact") details.push(game.i18n.localize("ACTION_HUD.spellTabPactMagic"));
   if (method === "atwill") details.push(game.i18n.localize("ACTION_HUD.spellTabAtWill"));
   if (method === "innate") details.push(game.i18n.localize("ACTION_HUD.spellTabInnate"));
+  if (method === "dragonmarked") details.push(game.i18n.localize("ACTION_HUD.spellTabAdditional"));
   const activationLabels = {
     action: game.i18n.localize("ACTION_HUD.spellFilterAction"),
     bonus: game.i18n.localize("ACTION_HUD.spellFilterBonus"),
@@ -2649,6 +2735,8 @@ function spellTooltipMetadata(item, activationTypes) {
   if (spellHasProperty(item, "ritual") || spellMethod(item) === "ritual") tags.push(game.i18n.localize("ACTION_HUD.spellTabRituals"));
   if (spellMethod(item) === "atwill") tags.push(game.i18n.localize("ACTION_HUD.spellTabAtWill"));
   if (spellMethod(item) === "innate") tags.push(game.i18n.localize("ACTION_HUD.spellTabInnate"));
+  if (spellMethod(item) === "pact") tags.push(game.i18n.localize("ACTION_HUD.spellTabPactMagic"));
+  if (spellMethod(item) === "dragonmarked") tags.push(game.i18n.localize("ACTION_HUD.spellTabAdditional"));
   const label = key => game.i18n.localize(key);
   return [
     { label: label("DND5E.SpellCastTime"), value: castTime },
@@ -2660,7 +2748,9 @@ function spellTooltipMetadata(item, activationTypes) {
 }
 
 function getActivityValues(item) {
-  const activities = item?.system?.activities;
+  // D&D 5e exposes activities through system.activities. Some document wrappers
+  // expose the same collection directly, so fall back to that public accessor.
+  const activities = item?.system?.activities ?? item?.activities;
   if (Array.isArray(activities)) return activities;
   if (activities?.contents) return activities.contents;
   if (activities?.values instanceof Function) return [...activities.values()];
@@ -3025,9 +3115,23 @@ function documentDescription(document, kind) {
 
 function effectRemainingLabel(effect) {
   const duration = effect?.duration ?? {};
+  // Foundry V14's derived duration uses `remaining` in `units` (rounds, turns,
+  // minutes, etc.) and provides a canonical human-readable `label`. Prefer it to
+  // legacy source fields such as `duration.rounds`.
+  const formattedLabel = duration.label;
+  if (typeof formattedLabel === "string" && formattedLabel.trim() && formattedLabel !== "—") return formattedLabel;
+
   const remaining = Number(duration.remaining);
   if (Number.isFinite(remaining) && remaining >= 0 && duration.remaining !== undefined && duration.remaining !== null) {
-    if (duration.rounds) return `${Math.ceil(remaining)} ${game.i18n.localize("ACTION_HUD.roundsRemaining")}`;
+    if (duration.units === "rounds" || duration.rounds) return `${Math.ceil(remaining)} ${game.i18n.localize("ACTION_HUD.roundsRemaining")}`;
+    if (duration.units === "turns") return `${Math.ceil(remaining)} ${game.i18n.localize("ACTION_HUD.turnsRemaining")}`;
+    const secondsRemaining = duration.secondsRemaining;
+    if (secondsRemaining !== undefined && secondsRemaining !== null && Number.isFinite(Number(secondsRemaining))) {
+      return formatRemainingSeconds(Number(secondsRemaining));
+    }
+    const secondsPerUnit = { seconds: 1, minutes: 60, hours: 3600, days: 86400 }[duration.units];
+    if (secondsPerUnit) return formatRemainingSeconds(remaining * secondsPerUnit);
+    if (duration.units) return `${Math.ceil(remaining)} ${duration.units}`;
     return formatRemainingSeconds(remaining);
   }
   const seconds = Number(duration.seconds);
@@ -3282,7 +3386,191 @@ function midiUsedAction(actor, type) {
   return effects.some(effect => !effect.disabled && [effect.name, effect.id, effect.getFlag?.("core", "statusId"), ...(effect.statuses ?? [])].some(value => localized.has(normalize(value))));
 }
 
+function dasApi() {
+  const module = game.modules?.get?.("dnd5e-combat");
+  return module?.active && module.api?.active ? module.api : null;
+}
+
+function queueDasInitiativeRequest(combatant) {
+  const api = dasApi();
+  if (!api?.rolls?.request || !game.users?.activeGM?.isSelf) return;
+  const combat = combatant?.combat;
+  const actor = combatant?.actor;
+  if (!combat || !actor || Number.isFinite(combatant.initiative)) return;
+
+  let queued = pendingDasInitiative.get(combat.id);
+  if (!queued) pendingDasInitiative.set(combat.id, queued = new Map());
+  queued.set(actor.uuid, actor);
+  clearTimeout(dasInitiativeTimers.get(combat.id));
+  dasInitiativeTimers.set(combat.id, setTimeout(() => {
+    dasInitiativeTimers.delete(combat.id);
+    void requestDasInitiative(combat.id);
+  }, 100));
+}
+
+async function requestDasInitiative(combatId) {
+  const queued = pendingDasInitiative.get(combatId);
+  pendingDasInitiative.delete(combatId);
+  const api = dasApi();
+  const combat = game.combats?.get?.(combatId);
+  if (!queued?.size || !api?.rolls?.request || !combat || !game.users?.activeGM?.isSelf) return;
+
+  // A repeated linked actor needs only one initiative roll. The DAS request will
+  // assign that total to every unrolled combatant belonging to that actor.
+  const unrolledActors = new Set((combat.combatants?.contents ?? [])
+    .filter(entry => !Number.isFinite(entry.initiative) && entry.actor)
+    .map(entry => entry.actor.uuid));
+  const requested = requestedDasInitiativeActors.get(combatId) ?? new Set();
+  requestedDasInitiativeActors.set(combatId, requested);
+  const actors = [...queued.values()].filter(actor => unrolledActors.has(actor.uuid) && !requested.has(actor.uuid));
+  if (!actors.length) return;
+  for (const actor of actors) requested.add(actor.uuid);
+
+  try {
+    await api.rolls.request({ actors, type: "initiative", combat: combat.id });
+    for (const actor of actors) requested.delete(actor.uuid);
+  } catch (error) {
+    for (const actor of actors) requested.delete(actor.uuid);
+    console.error(`${MODULE_ID} | Could not request DAS initiative`, error);
+  }
+}
+
+const DAS_BASIC_ACTIONS = Object.freeze({
+  dodge: "dodge", help: "help", dash: "dash", disengage: "disengage",
+  ready: "ready", search: "search", hide: "hide"
+});
+
+async function useDasBasicAction(actor, kind, event) {
+  const api = dasApi();
+  if (!api || !actor || !kind) return false;
+  // DAS exposes these three as direct budget operations specifically for NPCs
+  // that do not have action items. They apply without adding anything to the actor.
+  if (["dodge", "dash", "disengage"].includes(kind) && typeof api.basics?.take === "function") {
+    await api.basics.take(actor, kind);
+    return true;
+  }
+
+  // Other DAS basic actions are activity-backed. Construct their official item
+  // data as an in-memory child document so the activity has the correct actor,
+  // while never embedding or saving the item on the actor.
+  const ItemClass = CONFIG.Item?.documentClass ?? globalThis.Item?.implementation;
+  if (typeof api.basics?.data !== "function" || typeof ItemClass !== "function") {
+    ui.notifications.warn(game.i18n.format("ACTION_HUD.dasActionMissing", { action: kind }));
+    return true;
+  }
+  const item = new ItemClass(api.basics.data(kind), { parent: actor });
+  const activity = getActivityValues(item)[0];
+  if (!activity) {
+    ui.notifications.warn(game.i18n.format("ACTION_HUD.dasActionMissing", { action: kind }));
+    return true;
+  }
+  if (typeof api.antimagic?.use === "function") await api.antimagic.use(activity, { event });
+  else await activity.use({ event });
+  return true;
+}
+
+async function useDasGrappleAction(actor, event) {
+  const api = dasApi();
+  if (!api || !actor) return false;
+  const unarmedStrike = actor.items?.find?.(item => item.system?.identifier === "unarmed-strike")
+    ?? actor.items?.find?.(item => item.type === "weapon" && String(item.name).trim().toLowerCase() === "unarmed strike");
+  let activity = getActivityValues(unarmedStrike).find(candidate => candidate.type === "save");
+  if (!activity) {
+    // Some NPCs do not have the sheet's Unarmed Strike item. DAS supplies the same
+    // grapple/shove activity data publicly; keep the fallback document in memory.
+    const ItemClass = CONFIG.Item?.documentClass ?? globalThis.Item?.implementation;
+    if (typeof api.basics?.data !== "function" || typeof ItemClass !== "function") {
+      ui.notifications.warn(game.i18n.format("ACTION_HUD.dasActionMissing", { action: "grapple" }));
+      return true;
+    }
+    const temporaryItem = new ItemClass(api.basics.data("unarmed"), { parent: actor });
+    activity = getActivityValues(temporaryItem).find(candidate => candidate.type === "save");
+  }
+  if (!activity) {
+    ui.notifications.warn(game.i18n.format("ACTION_HUD.dasActionMissing", { action: "grapple" }));
+    return true;
+  }
+  if (typeof api.antimagic?.use === "function") await api.antimagic.use(activity, { event });
+  else await activity.use({ event });
+  return true;
+}
+
+function syncDasBarSuppression() {
+  if (!document.body) return;
+  const enabled = game.modules?.get?.(MODULE_ID)?.active !== false
+    && game.settings?.get?.(MODULE_ID, "enabled") !== false
+    && game.settings?.get?.(MODULE_ID, "suppressDasBar") === true
+    && game.modules?.get?.("darsh-dnd-ui")?.active === true;
+  document.body.classList.toggle("ahud-suppress-das-bar", enabled);
+}
+
+function dasActionAvailability(actor, item) {
+  const api = dasApi();
+  if (!api || !actor || !item) return null;
+  const activities = getActivityValues(item);
+  if (activities.length && typeof api.ui?.cell === "function") {
+    const states = activities.map(activity => {
+      try { return api.ui.cell(activity); } catch (_) { return null; }
+    }).filter(Boolean);
+    if (!states.length) return { blocked: false, reason: "", types: itemActivationTypes(item) };
+    const usable = states.filter(state => !Array.isArray(state.issues) || state.issues.length === 0);
+    const blocked = usable.length === 0;
+    const reasons = [...new Set(states.flatMap(state => Array.isArray(state.issues) ? state.issues : []))];
+    return { blocked, reason: reasons.join(" / "), types: itemActivationTypes(item) };
+  }
+
+  const types = itemActivationTypes(item);
+  const combatant = game.combat?.started
+    ? game.combat.combatants?.find?.(entry => entry.actorId === actor.id || entry.actor?.uuid === actor.uuid)
+    : null;
+  const budget = combatant && api.ui?.budget?.(combatant);
+  if (!budget || !types.size) return { blocked: false, reason: "", types };
+  const available = { action: budget.action, bonus: budget.bonus, reaction: budget.reaction };
+  const blocked = [...types].every(type => available[type] === false);
+  const reasons = [...types].filter(type => available[type] === false).map(type =>
+    type === "action" ? game.i18n.localize("ACTION_HUD.actionUsed")
+      : type === "bonus" ? game.i18n.localize("ACTION_HUD.bonusActionUsed")
+        : game.i18n.localize("ACTION_HUD.reactionUsed"));
+  return { blocked, reason: reasons.join(" / "), types };
+}
+
 function getItemActionAvailability(actor, item) {
+  // A Spellcasting-method spell can use its own item uses or any available slot.
+  // When a slot remains, only mark it unavailable for the action budget—not merely
+  // because its optional item-use pool is empty.
+  if (item?.type === "spell" && ["spellcasting", "pact"].includes(spellMethod(item))
+    && actorHasAvailableSpellSlot(actor, item)) {
+    const api = dasApi();
+    const types = itemActivationTypes(item);
+    if (api) {
+      const combatant = game.combat?.started
+        ? game.combat.combatants?.find?.(entry => entry.actorId === actor.id || entry.actor?.uuid === actor.uuid)
+        : null;
+      const budget = combatant && api.ui?.budget?.(combatant);
+      if (!budget || !types.size) return { blocked: false, reason: "", types };
+      const available = { action: budget.action, bonus: budget.bonus, reaction: budget.reaction };
+      const blocked = [...types].every(type => available[type] === false);
+      const reasons = [...types].filter(type => available[type] === false).map(type =>
+        type === "action" ? game.i18n.localize("ACTION_HUD.actionUsed")
+          : type === "bonus" ? game.i18n.localize("ACTION_HUD.bonusActionUsed")
+            : game.i18n.localize("ACTION_HUD.reactionUsed"));
+      return { blocked, reason: reasons.join(" / "), types };
+    }
+    const spent = new Set();
+    if (midiUsedAction(actor, "action")) spent.add("action");
+    if (midiUsedAction(actor, "bonus")) spent.add("bonus");
+    if (midiUsedAction(actor, "reaction")) spent.add("reaction");
+    const blocked = types.size > 0 && [...types].every(type => spent.has(type));
+    const reasons = [...types].filter(type => spent.has(type)).map(type =>
+      type === "action" ? game.i18n.localize("ACTION_HUD.actionUsed")
+        : type === "bonus" ? game.i18n.localize("ACTION_HUD.bonusActionUsed")
+          : game.i18n.localize("ACTION_HUD.reactionUsed"));
+    return { blocked, reason: reasons.join(" / "), types };
+  }
+  // DAS owns the combat loop when active; use its public activity verdict instead
+  // of Midi-QoL flags, which intentionally do not exist in that configuration.
+  const dasState = dasActionAvailability(actor, item);
+  if (dasState) return dasState;
   const types = itemActivationTypes(item);
   if (!types.size) return { blocked: false, reason: "", types };
   const spent = new Set();
@@ -3772,11 +4060,37 @@ async function applyReadySpellAction(actor) {
     }
   });
 }
-async function handleCoreCombatAction(action) {
+async function handleCoreCombatAction(action, event=null) {
   const actor = activeActor;
   const token = activeToken;
   if (!actor || !token || !(game.user.isGM || actor.testUserPermission(game.user, "OWNER"))) {
     ui.notifications.info(game.i18n.localize("ACTION_HUD.selectTokenForAction")); return;
+  }
+
+  const das = dasApi();
+  if (das && action === "grapple" && !isActionHudGrappledToken(token.document)) {
+    try {
+      await useDasGrappleAction(actor, event);
+      renderEffectsStrip();
+      renderFavorites();
+    } catch (error) {
+      console.error(`${MODULE_ID} | DAS Grapple action failed`, error);
+      ui.notifications.error(game.i18n.localize("ACTION_HUD.combatActionFailed"));
+    }
+    return;
+  }
+  const dasKind = DAS_BASIC_ACTIONS[action]
+    ?? (action === "grapple" && isActionHudGrappledToken(token.document) ? "escape" : null);
+  if (das && dasKind) {
+    try {
+      await useDasBasicAction(actor, dasKind, event);
+      renderEffectsStrip();
+      renderFavorites();
+    } catch (error) {
+      console.error(`${MODULE_ID} | DAS ${dasKind} action failed`, error);
+      ui.notifications.error(game.i18n.localize("ACTION_HUD.combatActionFailed"));
+    }
+    return;
   }
 
   // These actions require an active combat. Help (Skill) remains usable during exploration.
@@ -6153,8 +6467,11 @@ function isActionHudGrappledToken(tokenDocument) {
   if (!tokenDocument) return false;
   const api = getRideableFlagsApi();
   if (api?.isGrappled?.(tokenDocument)) return true;
-  return (tokenDocument.actor?.effects?.contents ?? []).some(effect =>
-    effect.getFlag?.(MODULE_ID, "grappleRole") === "target" && Boolean(effect.getFlag?.(MODULE_ID, "grappleLinkId"))
+  const actor = tokenDocument.actor;
+  if (actor?.statuses?.has?.("grappled")) return true;
+  return (actor?.effects?.contents ?? []).some(effect =>
+    effect.statuses?.has?.("grappled")
+    || (effect.getFlag?.(MODULE_ID, "grappleRole") === "target" && Boolean(effect.getFlag?.(MODULE_ID, "grappleLinkId")))
   );
 }
 
@@ -6869,9 +7186,13 @@ function isTemporaryEffect(effect) {
     if (effect.isTemporary === true) return true;
   } catch (_) { /* Use compatibility fallbacks if the getter is unavailable. */ }
   const duration = effect.duration ?? {};
-  const dnd5eTemporary = effect.getFlag?.("dnd5e", "isTemporary") ?? effect.flags?.dnd5e?.isTemporary;
-  const daeDuration = effect.getFlag?.("dae", "duration") ?? effect.flags?.dae?.duration;
-  const daeSpecial = effect.getFlag?.("dae", "specialDuration") ?? effect.flags?.dae?.specialDuration;
+  const readFlag = (scope, key) => {
+    try { return effect.getFlag?.(scope, key) ?? effect.flags?.[scope]?.[key]; }
+    catch (_) { return effect.flags?.[scope]?.[key]; }
+  };
+  const dnd5eTemporary = readFlag("dnd5e", "isTemporary");
+  const daeDuration = readFlag("dae", "duration");
+  const daeSpecial = readFlag("dae", "specialDuration");
   const hasTimedDuration = [duration.seconds, duration.rounds, duration.turns, duration.remaining]
     .some(value => Number.isFinite(Number(value)) && Number(value) > 0);
   const hasDaeDuration = Number.isFinite(Number(daeDuration)) && Number(daeDuration) > 0;
@@ -6953,7 +7274,8 @@ function openSettings() {
     return;
   }
   const current = Number(game.settings.get(MODULE_ID, "scale") ?? 1);
-  const content = `<form class="ahud-settings"><label for="ahud-scale">${game.i18n.localize("ACTION_HUD.scale")}: <output>${Math.round(current * 100)}%</output></label><input id="ahud-scale" name="scale" type="range" min="0.7" max="1.2" step="0.05" value="${current}"><p>${game.i18n.localize("ACTION_HUD.scaleHint")}</p><button type="button" data-reset>${game.i18n.localize("ACTION_HUD.resetFavorites")}</button></form>`;
+  const suppressDasBar = game.settings.get(MODULE_ID, "suppressDasBar") === true;
+  const content = `<form class="ahud-settings"><label for="ahud-scale">${game.i18n.localize("ACTION_HUD.scale")}: <output>${Math.round(current * 100)}%</output></label><input id="ahud-scale" name="scale" type="range" min="0.7" max="1.2" step="0.05" value="${current}"><p>${game.i18n.localize("ACTION_HUD.scaleHint")}</p><label class="ahud-settings-toggle"><input name="suppressDasBar" type="checkbox"${suppressDasBar ? " checked" : ""}> ${game.i18n.localize("ACTION_HUD.suppressDasBar")}</label><p>${game.i18n.localize("ACTION_HUD.suppressDasBarHint")}</p><button type="button" data-reset>${game.i18n.localize("ACTION_HUD.resetFavorites")}</button></form>`;
   const dialog = new Dialog({ title: "Action HUD Settings", content, classes: ["ahud-dialog-window"], buttons: { close: { label: "Close" } }, close: () => {
     hudDialogs.delete(dialog);
     if (settingsDialog === dialog) settingsDialog = null;
@@ -6968,6 +7290,8 @@ function openSettings() {
       applyTooltipScale(value);
     });
     input.addEventListener("change", () => void game.settings.set(MODULE_ID, "scale", Number(input.value)));
+    const dasBarToggle = html[0].querySelector("input[name=suppressDasBar]");
+    dasBarToggle.addEventListener("change", () => void game.settings.set(MODULE_ID, "suppressDasBar", dasBarToggle.checked));
     html[0].querySelector("[data-reset]").addEventListener("click", () => void resetFavorites());
   } });
   settingsDialog = dialog;

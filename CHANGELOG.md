@@ -1,3 +1,68 @@
+## 0.2.0
+
+### Automation compatibility
+- Added DAS · Core support alongside Midi-QoL, preserving the existing Midi behavior when DAS is inactive.
+- Added a client setting to hide the DAS action bar while Action HUD is enabled, leaving the carousel and sidebar visible.
+- Routed Dodge, Help, Dash, Hide, Escape, Search, Ready, and Disengage through DAS automation. The HUD uses DAS's direct action API or in-memory activity data so it does not add action items to actor sheets; Grapple uses the actor's Unarmed Strike activity.
+- Request initiative through DAS when combatants are added. Player-owned actors receive a roll request; NPCs without an active player owner roll automatically.
+
+### Spellbook and Features
+- Reworked spell tabs around casting method and spell-slot capacity: Spellcasting spells by level, Pact Magic under P, Ritual Only under Rituals, and At-Will/Innate/Dragonmarked under Additional Spells. Leveled spells without matching slot capacity go under Additional Spells.
+- Added an Item Spells tab for spells linked to inventory items such as scrolls, potions, weapons, and armor. Feature-linked spells continue to use normal method/slot categories.
+- Restored prepared-only spell visibility, preserving the Wizard exception for unprepared rituals. Prepared ritual-tagged spells appear in both their main tab and Rituals.
+- Depleted item-use pools no longer grey out leveled spells when a suitable spell slot remains.
+- Features now shows only entries with configured uses/charges or at least one activity; empty categories are omitted.
+
+### Fixes
+- Fixed buff tooltip durations that appeared as `1s` by using Foundry's duration label and units.
+- Fixed DAS Grapple routing and Escape refresh errors when DAE is unavailable.
+- Removed orphaned hover-card pin buttons after item drag-and-drop.
+
+## 0.1.108
+- Restore prepared-only visibility: unprepared spells are hidden except for Wizard rituals. Inventory-linked spells remain in Item Spells regardless of preparation, and feature-linked spells follow normal method/slot categories.
+
+## 0.1.107
+- Restrict Item Spells to spells linked to inventory item types (weapons, equipment/armor, consumables, tools, loot, and containers). Feature-linked spells remain in their method- and slot-based categories.
+
+## 0.1.106
+- Add an Item Spells tab with a scroll icon. Add a dedicated Item Spells tab with a scroll icon for linked spells.
+
+## 0.1.105
+- Sort spells by casting method and available slot structure: Spellcasting by level, Pact Magic under P, Ritual Only under Rituals, and At-Will/Innate/Dragonmarked under Additional. Preserve prepared ritual duplication and Wizard unprepared-ritual behavior. Put leveled spells without matching slot capacity in Additional; do not grey spells out for depleted item uses when a slot remains.
+
+## 0.1.104
+- Remove the transient tooltip pin button when an item drag ends, preventing orphaned pin icons from remaining over the canvas.
+
+## 0.1.103
+- Route DAS Grapple through the actor's Unarmed Strike save activity, with an in-memory DAS fallback for NPCs without it. Read optional DAE flags safely so Escape refreshes do not throw when DAE is absent.
+
+## 0.1.102
+- Use DAS's direct basic-action API for Dodge, Dash, and Disengage; run other DAS basic-action activities from in-memory items. Action HUD no longer adds DAS basic-action items to actors.
+
+## 0.1.101
+- When DAS is active and the selected actor lacks a basic-action item, create that action from DAS's public API before using it. This enables Combat Actions for NPCs without changing Midi behavior.
+
+## 0.1.100
+- Preserve class, subclass, race, and background documents as category metadata while filtering feature entries. Read activities from either D&D 5e's system data or the Item document accessor.
+
+## 0.1.99
+- Show only Features entries that have configured uses/charges or at least one activity, in both Midi-QoL and DAS · Core worlds.
+
+## 0.1.98
+- When DAS · Core is active, request initiative through DAS when new combatants are added. Player-owned actors receive the roll request; NPCs without an active player owner are rolled automatically.
+
+## 0.1.97
+- Fix buff tooltip durations showing `1s` by using Foundry V14's duration label and configured units.
+
+## 0.1.96
+- Show linked spells from non-class items exclusively in Additional Spells, including item-granted ritual, cantrip, at-will, and innate spells.
+
+## 0.1.95
+- Hide explicitly unprepared Wizard cantrips from the Cantrips tab and include unprepared Wizard ritual spells in Rituals only.
+
+## 0.1.94
+- Route Dodge, Help, Dash, Hide, Escape, Search, Ready, and Disengage through DAS basic-action items when DAS · Core is active. Midi-QoL worlds retain the existing Action HUD behavior.
+
 ## 0.1.91
 - Enlarged the Favorites bar slots while reducing the HP and mana orb sections to keep the HUD footprint stable.
 

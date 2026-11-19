@@ -31,6 +31,8 @@
   user-select: none;
 }
 #action-hud-root[hidden], #action-hud-root [hidden] { display: none !important; }
+/* Optional handoff: keep DAS's carousel and party/sidebar UI while hiding only its action bar. */
+body.ahud-suppress-das-bar #ddu-bar { display: none !important; }
 #action-hud-root *, .ahud-dialog-window * { box-sizing: border-box; }
 #action-hud-root button, .ahud-dialog-window .window-content button {
   color: inherit;
@@ -596,6 +598,8 @@
 .ahud-dialog-window .window-content button { padding: 6px 9px; }
 .ahud-settings { display: flex; flex-direction: column; gap: 10px; }
 .ahud-settings label { display: flex; justify-content: space-between; gap: 12px; font-weight: 700; color: #80c1b2; }
+.ahud-settings label.ahud-settings-toggle { justify-content: flex-start; align-items: center; }
+.ahud-settings-toggle input { flex: 0 0 auto; accent-color: #3f7c70; }
 .ahud-settings output { color: #e7efec; }
 .ahud-settings input[type=range] { width: 100%; accent-color: #3f7c70; }
 .ahud-settings button[data-reset] { align-self: flex-start; }

@@ -2,12 +2,20 @@
 
 A compact, customizable action HUD for Foundry VTT V14 and D&D 5e 6.x, using a blue-charcoal and teal visual style designed to complement Roll Director.
 
-## Current stable build: 0.1.83
+## Automation compatibility
+
+Action HUD supports either Midi-QoL or DAS · Core (`dnd5e-combat`) as the active automation engine. Favorite and drawer item uses go through the normal D&D 5e item workflow, so DAS can apply its activity automation, targeting, resource, and combat rules. When DAS is active, item availability indicators read its public activity verdict and turn budget API. The Combat Actions buttons for Dodge, Help, Dash, Disengage, Ready, Search, and Hide use DAS's direct budget API or in-memory activity data without adding action items to actors; the grapple button uses DAS Escape when the actor is grappled. DAS also requests initiative when combatants are added: active player owners receive a roll request, while actors without an active player owner are rolled automatically. When DAS is inactive, the existing Midi-QoL action tracking and combat-action behavior remain in use.
+
+Action HUD does not draw a second combat bar, carousel, or sidebar tracker. It can be used alongside DAS · Combat UI with that module's action bar disabled while retaining its carousel and sidebar features.
+
+The Action HUD Settings dialog includes **Hide DAS action bar while Action HUD is enabled**. It hides only the DAS action bar for the current client and restores it automatically when Action HUD is turned off; it does not change DAS settings or hide the initiative carousel or party/sidebar UI.
+
+## Current stable build: 0.2.0
 
 Spellbook, Features, and Inventory extensions now show a single horizontally scrollable row of item tiles. Hover cards align to the extension top and cap their height at the combined extension-plus-HUD height, scrolling internally when descriptions are longer.
 
 
-This is the current in-world tested baseline with the Midi-QoL 14.6.5 action-usage compatibility update.
+The original HUD behavior was tested with Midi-QoL 14.6.5. DAS-specific paths use its public API and need live validation in the target world.
 
 ### Implemented
 - Movable, lockable, collapsible HUD with persisted position and configurable 70–120% scale.
@@ -24,8 +32,8 @@ This is the current in-world tested baseline with the Midi-QoL 14.6.5 action-usa
 - Optional Indy Dice Chronicle integration: while a recording session is active, the globe center shows a faceted d20 graphic with the latest privacy-visible natural face printed directly on it; if the module is inactive or the GM chooses No recording, Spell DC is shown instead.
 - GM can click individual spell-slot segments to expend a slot or restore a used slot.
 - Current Foundry token movement action is displayed; click the movement selector to change it.
-- Checks and saves, feature/inventory drawers, and a compact icon-tab Spellbook with Cantrip/level/Ritual/At-Will/Innate/Additional categories, alphabetical tile layout, search, and dimming Action/Bonus Action/Reaction filters.
-- Spellbook excludes explicitly unprepared leveled spells, while retaining cantrips and non-slot spellcasting methods; clicking a spell delegates to the native D&D 5e item-use workflow.
+- Checks and saves, feature/inventory drawers, and a compact icon-tab Spellbook with Cantrip/level/Pact Magic/Ritual/Additional/Item Spells categories, alphabetical tile layout, search, and dimming Action/Bonus Action/Reaction filters.
+- Spellbook categories follow spellcasting method and available slot capacity: Spellcasting spells use their level, Pact Magic uses P, Ritual Only uses Rituals, and At-Will/Innate/Dragonmarked spells use Additional Spells. Spells linked to inventory items (such as scrolls, potions, weapons, and armor) appear only under Item Spells, including linked ritual spells. Feature-linked spells stay in their method- and slot-based categories. Unprepared spells are hidden except for Wizard rituals; inventory-linked spells remain visible under Item Spells. Ritual-tagged prepared spells appear in both their main category and Rituals; Wizards also see unprepared rituals under Rituals only. Leveled spells without a matching slot go under Additional Spells. Wizards do not see explicitly unprepared cantrips. Clicking a spell delegates to the native D&D 5e item-use workflow.
 - GM Conditions popup extends upward from the bar and lists condition icons plus names; clicking toggles each condition on or off per selected actor, handling mixed states and linked actors.
 - GM bar contains only Conditions, persistent settings/lock/collapse controls, token/GM switch when a token is selected, and team Short Rest / Long Rest buttons using the primary D&D 5e Party actor workflow.
 - GM bar portrait uses the assigned GM character image when available, then the GM user profile image, then Foundry’s generic fallback portrait.
@@ -41,6 +49,7 @@ This is the current in-world tested baseline with the Midi-QoL 14.6.5 action-usa
 ### Known follow-up work
 - Live Foundry runtime validation of D&D 5e 6.0.6 APIs, death saves, class-specific spell DC display, hit-die summaries, movement actions, GM spell-slot adjustment, and the optional Indy Dice Chronicle session switch.
 - Live Foundry validation of Spellbook tab classification and filtering, including unusual source-item and activity data.
+- Live Foundry validation of DAS action routing, itemless NPC actions, initiative requests, and the 2024 Grapple/Escape workflows.
 - Configurable weapon-set labeling and further live testing of two-handed equipment and shield interactions.
 - Dedicated GM macro slots, expanded bulk effect removal, and explicit Roll Director/Midi-QoL integration validation.
 - Automated browser-based visual checks at Full HD and 1440p.
@@ -59,7 +68,7 @@ The JavaScript can be syntax-checked with `node --check src/main.js`, and the mo
 
 ## Spellbook categories (0.1.9)
 
-The Spellbook uses a `C` tab for cantrips, numbered tabs for spell levels, a pentagram tab for rituals, and separate At-Will, Innate, and Additional tabs. Cantrips stay in the Cantrips category even when granted by another source. Additional Spells is reserved for spells linked to non-class/subclass items or features with limited uses/charges. Always-prepared class and subclass spells remain sorted by their normal spell level. Active-effect icons are displayed in a vertical strip to the left of the HUD.
+The Spellbook uses a `C` tab for cantrips, numbered tabs for spell levels, a `P` tab for Pact Magic, a pentagram tab for rituals, and separate Additional Spells and Item Spells tabs. Inventory-linked spells appear only under Item Spells; feature-linked spells follow their casting method and slot availability. Prepared ritual-tagged spells also appear under Rituals, and Wizards can see unprepared rituals there.
 
 
 ## Spellbook action indicators (0.1.10)
@@ -70,7 +79,7 @@ The Spellbook uses a `C` tab for cantrips, numbered tabs for spell levels, a pen
 
 ### Core Combat Actions and GM Encounter Controls (0.1.31; dropdown theme fix in 0.1.32)
 
-The actor HUD now provides a Core Combat Actions drawer. Dodge applies Midi-QoL disadvantage on attacks against the dodging actor and D&D 5e advantage on Dexterity saves; it ends at the actor's next turn and is removed early if the actor becomes incapacitated or has no positive movement speed. Help: Attack applies Midi-QoL's `flags.midi-qol.grants.advantage.attack.all` to the selected target and consumes the mark after the first non-helper Midi-QoL attack roll against that target; otherwise it expires at the helper's next turn. Help: Skill grants advantage to one selected skill on a chosen ally, is consumed after the first matching D&D 5e skill roll, and otherwise expires at the helper's next turn. Dash, Disengage, Ready, and Search add visible temporary markers only; no movement or readied-reaction automation is attempted.
+With Midi-QoL active, combat actions use Action HUD's existing Midi-QoL effect and roll workflows. With DAS · Core active, the buttons use DAS's action API and activity automation without adding action items to actor sheets.
 
 The GM bar's Encounter Controls drawer can search and select tokens on the current scene without canvas clicking, start or end combat, add currently controlled tokens, advance/rewind the turn order, and open the Combat Tracker. Favorite slots display item-level limited-use counters and recharge state, plus D&D 5e 6.x Activity Uses pools when an activity consumes that pool. These changes do not replace native item use or Midi-QoL roll workflows.
 Effect icons use supplied Foundry assets for Dodge (`icons/skills/melee/shield-block-gray-orange.webp`), Help (`icons/skills/social/diplomacy-handshake.webp`), Dash (`icons/skills/movement/figure-running-gray.webp`), Disengage (`icons/skills/movement/feet-winged-boots-brown.webp`), Ready (`icons/tools/navigation/hourglass.webp`), and Search (`icons/tools/scribal/magnifying-glass.webp`). Hide rolls Stealth without creating a separate Action HUD effect, allowing existing Stealth automation to handle its marker.
